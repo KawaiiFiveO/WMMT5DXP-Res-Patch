@@ -11,6 +11,7 @@ Download the latest zip from [Releases](../../releases) and follow the instructi
 Already have Python? Download `patch.py`, place it in your game directory, and run the script:
 
 ```
+pip install pefile
 python patch.py
 ```
 
