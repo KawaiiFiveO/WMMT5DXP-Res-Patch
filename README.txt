@@ -1,4 +1,4 @@
-5DX+ JP (Update 5) Resolution Patch
+5DX+ Multiversion Resolution Patch
 
 Instructions:
 
