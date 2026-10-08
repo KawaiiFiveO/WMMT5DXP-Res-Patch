@@ -1,6 +1,6 @@
 # WMMT5DX+ Resolution Patch
 
-This is a resolution patch for the WMMT5DX+ Japanese Update 5 Dump (2017). It will not work with the English (2016) version.
+This is a resolution patch for WMMT5DX+. It works with both the Japanese Update 5 Dump (2017) and the English (2016) version.
 
 ## Usage
 

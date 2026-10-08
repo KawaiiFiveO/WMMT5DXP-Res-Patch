@@ -13,63 +13,87 @@ except ImportError:
 
 # --- CONFIGURATION ---
 
-KNOWN_HASHES = {
-    "BA93C413EC213445DA25C70700DB0D195DF3A2EB60E1601905BA2B9DC1A1FB26".casefold(): "WMMT5DX+ Japanese Update 5 Dump (2017)"
-}
+HASH_2017_JP = "BA93C413EC213445DA25C70700DB0D195DF3A2EB60E1601905BA2B9DC1A1FB26".casefold()
+HASH_2016_EN = "738E88B4D03EF6AB84208464D470E69557A8591CF5A293570BADB1DFDCBC3B2A".casefold()
 
 BAD_HASHES = {
-    "738E88B4D03EF6AB84208464D470E69557A8591CF5A293570BADB1DFDCBC3B2A".casefold(): "WMMT5DX+ English Patched Dump (2016)",
     "92F02199A44FA65A35AF3ED162B5CE5477CFC8B2E3A13CCC95936356680F1479".casefold(): "WMMT6 Japanese Dump (2018)",
     "798EC25B33669071331FA6DFC05A8C385B87F01026F3C32290D07890F58C45A1".casefold(): "WMMT5 Japanese Dump (2018)"
 }
 
 IMAGE_BASE = 0x140000000
 
-# Base Resolution Offsets (Virtual Addresses)
-RES_PATCHES = [
-    (0x140b8426e + 4, 'width'),
-    (0x140b8427b + 4, 'height'),
-    (0x140236129 + 2, 'width'),
-    (0x14023612f + 2, 'height'),
-    (0x140b849a7 + 4, 'width'),
-    (0x140b849af + 4, 'height'),
-]
-
-# Aspect Ratio Float Offset (validation guard only -- never written for 16:9)
-# Instruction: C7 43 0C [AB AA E2 3F] -> Float starts 3 bytes in.
-# This is the main camera ctor's aspect literal, 1360/768 = the aspect of the
-# game's *virtual* coordinate space. A resolution change alters pixel density,
-# not that space, so 16:9 targets leave it alone -- which is what the 2016
-# reference patcher does. Only ultrawide needs it rewritten, to the aspect of
-# the widened virtual space (2.3703704 for 2560x1080).
-ASPECT_RATIO_VA = 0x1400ea566 + 3
-ASPECT_RATIO_ORIGINAL = b'\xAB\xAA\xE2\x3F'
-
-# UI Scale Trampoline Offsets
-# These are the two `movss <matrix m10>, <reg holding 1.0>` sites that the 2016
-# reference patcher hooks. The 2017 build has THREE copies of this matrix setup;
-# hook 2 must be the branch-target copy (xmm0), not the fall-through copy (xmm14).
-HOOK_1_VA = 0x1409426b8  # movss [rbp-0x58], xmm11   (6 bytes)
-HOOK_2_VA = 0x1409449b9  # movss [rbp-0x28], xmm0    (5 bytes)
-
-# Rival Nameplate Fix
-# 0x1400ea150 (world-to-screen, only called by the rival marker loop) scales the
+# Rival Nameplate Fix (identical code in both builds, only the address differs)
+# The world-to-screen helper (only called by the rival marker loop) scales the
 # projected point by the *real* render size read at runtime, but its caller adds
 # a hardcoded 680/384 -- the centre of the 1360x768 virtual UI space. Pin the
 # size to 1360x768 so the plate lands in the same space it is drawn in.
-NAMEPLATE_PATCHES = [
-    # (VA, original, patched)
-    (0x1400ea1e4, b'\x8B\x98\xD8\x00\x00\x00', b'\xBB' + struct.pack('<I', 1360) + b'\x90'),  # mov ebx, [rax+0xd8] -> mov ebx, 1360
-    (0x1400ea1ea, b'\x8B\xB8\xDC\x00\x00\x00', b'\xBF' + struct.pack('<I', 768) + b'\x90'),   # mov edi, [rax+0xdc] -> mov edi, 768
-]
+def nameplate_patches(va):
+    return [
+        # (VA, original, patched)
+        (va,     b'\x8B\x98\xD8\x00\x00\x00', b'\xBB' + struct.pack('<I', 1360) + b'\x90'),  # mov ebx, [rax+0xd8] -> mov ebx, 1360
+        (va + 6, b'\x8B\xB8\xDC\x00\x00\x00', b'\xBF' + struct.pack('<I', 768) + b'\x90'),   # mov edi, [rax+0xdc] -> mov edi, 768
+    ]
 
-# Code Cave splits (carving up the space between 140ee4f7c - 140ee4fff)
-CAVE_1_VA = 0x140ee4f80
-CAVE_2_VA = 0x140ee4fa0  
+# Per-version patch locations (Virtual Addresses)
+#
+# res_patches: start of each 4-byte width/height immediate.
+# aspect_va:   main camera ctor's aspect literal, C7 43 0C [AB AA E2 3F] -> float
+#              starts 3 bytes in. Validation guard only -- never written for 16:9.
+#              It is 1360/768, the aspect of the game's *virtual* coordinate
+#              space. A resolution change alters pixel density, not that space,
+#              so 16:9 targets leave it alone. Only ultrawide needs it rewritten.
+# hook_1/2:    the two `movss <matrix m10>, <reg holding 1.0>` sites to hook.
+#              hook_2_slot is the rbp disp8 of hook 2's matrix slot, which
+#              differs between builds.
+# cave_1/2:    24-byte trampolines in the zero padding at the end of .text.
+VERSIONS = {
+    HASH_2017_JP: {
+        "name": "WMMT5DX+ Japanese Update 5 Dump (2017)",
+        "res_patches": [
+            (0x140b8426e + 4, 'width'),
+            (0x140b8427b + 4, 'height'),
+            (0x140236129 + 2, 'width'),
+            (0x14023612f + 2, 'height'),
+            (0x140b849a7 + 4, 'width'),
+            (0x140b849af + 4, 'height'),
+        ],
+        "aspect_va": 0x1400ea566 + 3,
+        # The 2017 build has THREE copies of the matrix setup; hook 2 must be the
+        # branch-target copy (xmm0), not the fall-through copy (xmm14).
+        "hook_1_va": 0x1409426b8,   # movss [rbp-0x58], xmm11   (6 bytes)
+        "hook_2_va": 0x1409449b9,   # movss [rbp-0x28], xmm0    (5 bytes)
+        "hook_2_slot": 0xD8,
+        # Carving up the space between 140ee4f7c - 140ee4fff
+        "cave_1_va": 0x140ee4f80,
+        "cave_2_va": 0x140ee4fa0,
+        "nameplate_patches": nameplate_patches(0x1400ea1e4),
+    },
+    HASH_2016_EN: {
+        "name": "WMMT5DX+ English Patched Dump (2016)",
+        # File offsets for 2016 version, as VAs
+        "res_patches": [
+            (0x140233f4b, 'width'),
+            (0x140233f51, 'height'),
+            (0x140b2cceb, 'width'),
+            (0x140b2ccf3, 'height'),
+            (0x140b2c5e2, 'width'),
+            (0x140b2c5ef, 'height'),
+        ],
+        "aspect_va": 0x1400ea846 + 3,
+        "hook_1_va": 0x1408e9608,   # movss [rbp-0x58], xmm11   (6 bytes)
+        "hook_2_va": 0x1408eb7fb,   # movss [rbp-0x78], xmm0    (5 bytes)
+        "hook_2_slot": 0x88,
+        # Same layout: cave 2 directly follows cave 1
+        "cave_1_va": 0x140e7b03c,
+        "cave_2_va": 0x140e7b054,
+        "nameplate_patches": nameplate_patches(0x1400ea4c4),
+    },
+}
 
 # Expected original bytes (for safety checks)
+ASPECT_RATIO_ORIGINAL = b'\xAB\xAA\xE2\x3F'
 HOOK_1_ORIGINAL = b'\xF3\x44\x0F\x11\x5D\xA8'
-HOOK_2_ORIGINAL = b'\xF3\x0F\x11\x45\xD8'
 
 
 def log(msg, status="INFO"):
@@ -92,14 +116,12 @@ def get_file_offset(pe, va):
     rva = va - IMAGE_BASE
     return pe.get_offset_from_rva(rva)
 
-def generate_trampoline(cave_va, hook_va, float_multiplier, reg_type):
+def generate_trampoline(cave_va, hook_va, float_multiplier, reg_type, slot=None):
     """Rebuild the hooked store as: slot = mult; reg *= slot; slot = reg.
 
     The multiply is deliberate: in both hooked functions the register holds a
     function-wide 1.0 that is reused for the matrix m15 term (and, for XMM11,
-    for a dozen later `unpcklps xmm1, xmm11` position vectors). The 2016
-    reference patch scales that constant too -- that is the mechanism, not a
-    side effect -- so we reproduce it exactly.
+    for a dozen later `unpcklps xmm1, xmm11` position vectors).
     """
     float_bytes = struct.pack('<f', float_multiplier)
 
@@ -110,10 +132,11 @@ def generate_trampoline(cave_va, hook_va, float_multiplier, reg_type):
                 + b'\xF3\x44\x0F\x11\x5D\xA8')
         hook_len = 6
     elif reg_type == "XMM0":
-        # movss [rbp-0x28], xmm0 -> 5 bytes replaced (no REX)
-        body = (b'\xC7\x45\xD8' + float_bytes
-                + b'\xF3\x0F\x59\x45\xD8'
-                + b'\xF3\x0F\x11\x45\xD8')
+        # movss [rbp+slot], xmm0 -> 5 bytes replaced (no REX)
+        d = bytes([slot])
+        body = (b'\xC7\x45' + d + float_bytes
+                + b'\xF3\x0F\x59\x45' + d
+                + b'\xF3\x0F\x11\x45' + d)
         hook_len = 5
     else:
         raise ValueError(f"Unknown register type: {reg_type}")
@@ -127,16 +150,16 @@ def main():
     print("="*55)
     print(" WMMT5DX+ Resolution & UI Patcher")
     print("="*55)
-    print("This patcher only supports the WMMT5DX+ Japanese Update 5 Dump (2017) executable.")
+    print("Supported: WMMT5DX+ Japanese Update 5 Dump (2017) and English Patched Dump (2016).")
     exe_name = input("Enter the executable filename (e.g., wmn5r.exe): ").strip()
     if not os.path.exists(exe_name):
         log("File not found!", "ERROR")
         return
 
     current_hash = calculate_sha256(exe_name)
-    if current_hash.casefold() in KNOWN_HASHES:
-        version_name = KNOWN_HASHES[current_hash]
-        log(f"Executable recognized: {version_name}", "SUCCESS")
+    if current_hash.casefold() in VERSIONS:
+        version = VERSIONS[current_hash.casefold()]
+        log(f"Executable recognized: {version['name']}", "SUCCESS")
     elif current_hash.casefold() in BAD_HASHES:
         version_name = BAD_HASHES[current_hash]
         log(f"Executable recognized: {version_name}", "INFO")
@@ -147,6 +170,17 @@ def main():
         choice = input("This executable may be unsupported or modified. Continue anyway? (y/n): ")
         if choice.lower() != 'y':
             log("Aborting patch.", "INFO")
+            return
+        print("\nPatch it as which version?")
+        print("1) WMMT5DX+ Japanese Update 5 Dump (2017)")
+        print("2) WMMT5DX+ English Patched Dump (2016)")
+        choice = input("Choice: ").strip()
+        if choice == '1':
+            version = VERSIONS[HASH_2017_JP]
+        elif choice == '2':
+            version = VERSIONS[HASH_2016_EN]
+        else:
+            log("Invalid choice.", "ERROR")
             return
 
     print("\nSelect Target Resolution:")
@@ -168,6 +202,16 @@ def main():
     else:
         log("Invalid choice.", "ERROR")
         return
+
+    RES_PATCHES = version["res_patches"]
+    ASPECT_RATIO_VA = version["aspect_va"]
+    HOOK_1_VA = version["hook_1_va"]
+    HOOK_2_VA = version["hook_2_va"]
+    HOOK_2_SLOT = version["hook_2_slot"]
+    HOOK_2_ORIGINAL = b'\xF3\x0F\x11\x45' + bytes([HOOK_2_SLOT])
+    CAVE_1_VA = version["cave_1_va"]
+    CAVE_2_VA = version["cave_2_va"]
+    NAMEPLATE_PATCHES = version["nameplate_patches"]
 
     # ---------------------------------------------------------
     # PHASE 1: VALIDATION (DRY RUN)
@@ -251,7 +295,7 @@ def main():
     else:
         log(f"Backup already exists: {backup_name}", "INFO")
 
-    ui_scale_mult = 765.0 / target_h   # matches the 2016 reference patcher
+    ui_scale_mult = 765.0 / target_h
     log(f"Target UI Multiplier calculated: {ui_scale_mult:.6f}")
     print("-" * 55)
 
@@ -267,15 +311,12 @@ def main():
         print(f"    Old: {format_bytes(old_bytes)}  ->  New: {format_bytes(val_bytes)}\n")
 
     # 2. Camera aspect ratio: deliberately left untouched.
-    # See ASPECT_RATIO_VA above -- the reference patcher only rewrites this for
-    # ultrawide. Changing it for 16:9 desyncs the 3D view from the 2D UI layer,
-    # which stays in the 1360x768 virtual space.
     log(f"Camera aspect left at native 1.770833 at VA {hex(ASPECT_RATIO_VA)}", "INFO")
     print(f"    Unchanged: {format_bytes(file_data[aspect_offset:aspect_offset+4])}\n")
 
     # 3. Generate and write trampolines to Code Caves
     cave1_payload = generate_trampoline(CAVE_1_VA, HOOK_1_VA, ui_scale_mult, "XMM11")
-    cave2_payload = generate_trampoline(CAVE_2_VA, HOOK_2_VA, ui_scale_mult, "XMM0")
+    cave2_payload = generate_trampoline(CAVE_2_VA, HOOK_2_VA, ui_scale_mult, "XMM0", HOOK_2_SLOT)
 
     # XMM11 Cave
     old_cave1 = file_data[c1_offset:c1_offset+len(cave1_payload)]
