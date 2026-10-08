@@ -52,6 +52,17 @@ ASPECT_RATIO_ORIGINAL = b'\xAB\xAA\xE2\x3F'
 HOOK_1_VA = 0x1409426b8  # movss [rbp-0x58], xmm11   (6 bytes)
 HOOK_2_VA = 0x1409449b9  # movss [rbp-0x28], xmm0    (5 bytes)
 
+# Rival Nameplate Fix
+# 0x1400ea150 (world-to-screen, only called by the rival marker loop) scales the
+# projected point by the *real* render size read at runtime, but its caller adds
+# a hardcoded 680/384 -- the centre of the 1360x768 virtual UI space. Pin the
+# size to 1360x768 so the plate lands in the same space it is drawn in.
+NAMEPLATE_PATCHES = [
+    # (VA, original, patched)
+    (0x1400ea1e4, b'\x8B\x98\xD8\x00\x00\x00', b'\xBB' + struct.pack('<I', 1360) + b'\x90'),  # mov ebx, [rax+0xd8] -> mov ebx, 1360
+    (0x1400ea1ea, b'\x8B\xB8\xDC\x00\x00\x00', b'\xBF' + struct.pack('<I', 768) + b'\x90'),   # mov edi, [rax+0xdc] -> mov edi, 768
+]
+
 # Code Cave splits (carving up the space between 140ee4f7c - 140ee4fff)
 CAVE_1_VA = 0x140ee4f80
 CAVE_2_VA = 0x140ee4fa0  
@@ -212,6 +223,15 @@ def main():
             log(f"Code Cave 2 at VA {hex(CAVE_2_VA)} is not empty!", "ERROR")
             return
 
+        # Check 5: Do the nameplate projection sites contain the expected original code?
+        nameplate_offsets = []
+        for va, original, patched in NAMEPLATE_PATCHES:
+            offset = get_file_offset(pe, va)
+            if file_data[offset:offset+len(original)] != original:
+                log(f"Nameplate original bytes mismatch at VA {hex(va)}.", "ERROR")
+                return
+            nameplate_offsets.append((offset, va, patched))
+
     except Exception as e:
         log(f"Validation failed due to structural offset error: {e}", "ERROR")
         return
@@ -287,6 +307,13 @@ def main():
     file_data[h2_offset:h2_offset+len(h2_jump_payload)] = h2_jump_payload
     log(f"Hooked XMM0 UI logic at VA {hex(HOOK_2_VA)}", "SUCCESS")
     print(f"    Old: {format_bytes(old_h2)}  ->  New: {format_bytes(h2_jump_payload)}\n")
+
+    # 5. Rival nameplate projection fix
+    for offset, va, patched in nameplate_offsets:
+        old_bytes = file_data[offset:offset+len(patched)]
+        file_data[offset:offset+len(patched)] = patched
+        log(f"Patched rival nameplate projection at VA {hex(va)}", "SUCCESS")
+        print(f"    Old: {format_bytes(old_bytes)}  ->  New: {format_bytes(patched)}\n")
 
     # Save Patched File
     output_name = exe_name.replace(".exe", f"_{target_w}x{target_h}.exe")
